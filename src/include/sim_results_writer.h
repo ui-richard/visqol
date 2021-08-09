@@ -201,6 +201,7 @@ class SimilarityResultsWriter {
   static void WriteResultsToCSV(const FilePath &csv_res_path,
                                 const SimilarityResultMsg &sim_res_msg,
                                 const bool output_moslqo = true,
+                                const bool output_vnsim = true,
                                 const bool output_fvnsim = true,
                                 const bool output_stddev = true,
                                 const bool output_fvdegenergy = true) {
@@ -214,7 +215,9 @@ class SimilarityResultsWriter {
       if (output_moslqo) {
         out_file << ",moslqo";
       }
-
+      if (output_vnsim) {
+        out_file << ",vnsim";
+      }
       if (output_fvnsim) {
         for (size_t i = 0; i < sim_res_msg.fvnsim_size(); i++) {
           out_file << ",fvnsim" << i;
@@ -239,7 +242,9 @@ class SimilarityResultsWriter {
     if (output_moslqo) {
       out_file << "," << std::setprecision(9) << sim_res_msg.moslqo();
     }
-
+    if (output_vnsim) {
+      out_file << "," << std::setprecision(9) << sim_res_msg.vnsim();
+    }
     if (output_fvnsim) {
       for (size_t i = 0; i < sim_res_msg.fvnsim_size(); i++) {
         out_file << "," << std::setprecision(9) << sim_res_msg.fvnsim(i);
