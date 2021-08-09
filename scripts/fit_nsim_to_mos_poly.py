@@ -56,6 +56,7 @@ from absl import flags
 from absl import logging
 
 import numpy as np
+from scipy.optimize import curve_fit
 
 FLAGS = flags.FLAGS
 
@@ -82,12 +83,12 @@ def LoadVNSIM(nsim_csv):
   """
   nsim_dict = {}
 
-  with open(nsim_csv, 'rb') as csvfile:
+  with open(nsim_csv, 'r') as csvfile:
     nsim_reader = csv.reader(csvfile)
     for row in nsim_reader:
       # Skip header
       if row[2] == 'vnsim':
-        continue
+          continue
       # Keep the degraded file without the directory info as key.
       # This will match what the mos dictionary has.
       deg_file = row[1].split('/')[-1]
@@ -105,12 +106,12 @@ def LoadMOS(mos_csv):
     Dictionary with filename keys and MOS values
   """
   mos_dict = {}
-  with open(mos_csv, 'rb') as csvfile:
+  with open(mos_csv, 'r') as csvfile:
     mos_reader = csv.reader(csvfile)
     for row in mos_reader:
       # Skip header
       if row[1] == 'MOS':
-        continue
+          continue
       mos_dict[row[0]] = row[1]
   return mos_dict
 
@@ -129,20 +130,61 @@ def MergeVNSIMAndMOS(mos_dict, nsim_dict):
   # NSIM keys are full paths, wheras MOS keys are filenames
   merged_dict = {}
 
-  for nsim_key, nsim_value in nsim_dict.iteritems():
+  for nsim_key, nsim_value in nsim_dict.items():
     # Some nsim values are NaN, skip those.
     if nsim_value == 'nan':
-      logging.warn('skipping nan nsim key %s', nsim_key)
-      continue
+        logging.warn('skipping nan nsim key %s', nsim_key)
+        continue
 
     if nsim_key not in mos_dict:
-      logging.warn('skipping missing mos key %s', nsim_key)
-      continue
+        logging.warn('skipping missing mos key %s', nsim_key)
+        continue
 
     mos_value = mos_dict[nsim_key]
     merged_dict[nsim_key] = [nsim_value, mos_value]
 
   return merged_dict
+
+
+def exponential_func(x, a, b, x0):
+    return a + np.exp(b*(x-x0))
+
+def ExpFitTrain(train_list):
+  mean_nsim = []
+  subj_mos = []
+
+  for _, score in train_list:
+    mean_nsim.append(float(score[0]))
+    subj_mos.append(float(score[1]))
+
+  popt, pcov = curve_fit(exponential_func, mean_nsim, subj_mos)
+  return list(popt)
+
+
+def ExpFitError(test_list, coefs):
+  """Calculate mean squared error given 3rd order polynomial coefficients.
+
+  Args:
+    test_list: list of tuples with (tag, MOS score).
+    coefs: 3rd order polynomial coefficients with np.polyval order.
+
+  Returns:
+    The mean of the squared error over all examples.
+  """
+  errors = []
+
+  for _, scores in test_list:
+    subjective_mos = float(scores[1])
+    nsim = float(scores[0])
+    estimated_mos = exponential_func(nsim, coefs[0], coefs[1], coefs[2])
+
+    # Additional clamping to MOS range as applied in ViSQOL.
+    estimated_mos = max(1., min(5., estimated_mos))
+
+    errors.append((subjective_mos - estimated_mos)**2)
+    logging.debug('nsim %d estimatemos %d subjmos %d', nsim, estimated_mos,
+                  subjective_mos)
+  return np.mean(errors)
 
 
 def PolyFitTrain(train_list):
@@ -192,7 +234,7 @@ def PolyFitError(test_list, coefs):
   return np.mean(errors)
 
 
-def ScaleForPerfectRef(coefs):
+def ScaleForPerfectRef(coefs, mode='poly'):
   """Calculate a scalar so that maximum NSIM of 1.0 maps to maximum MOS of 5.0.
 
   Applying this scaling is the default behavior but is optionally disabled via
@@ -206,7 +248,10 @@ def ScaleForPerfectRef(coefs):
     score of 5.0 for a perfect NSIM of 1.0.
   """
 
-  perfect_mos = np.polyval(coefs, 1.0)
+  if mode == 'poly':
+    perfect_mos = np.polyval(coefs, 1.0)
+  else:
+    perfect_mos = exponential_func(1.0, coefs[0], coefs[1], coefs[2])
   return 1.0 if perfect_mos > 5.0 else 5.0 / perfect_mos
 
 
@@ -227,12 +272,26 @@ def main(argv):
   logging.info('train size %d, test size %d, total size %d', len(train_list),
                len(test_list), len(merged_list))
 
+  # exponential fit
+  coefs = ExpFitTrain(train_list)
+  logging.info('exponential fitting coefs {%f, %f, %f}', coefs[0], coefs[1], coefs[2])
+
+  train_error = ExpFitError(train_list, coefs)
+  logging.info('train error %f', train_error) 
+
+  test_error = ExpFitError(test_list, coefs)
+  logging.info('test error %f', test_error)
+
+  scale_ref = ScaleForPerfectRef(coefs)
+  logging.info('scale for perfect ref %f', scale_ref)
+
+  # poly
   coef_dict = {
       'new_coefs': PolyFitTrain(train_list),
-      'v238': [158.7423, -373.5843, 295.5249, -75.2952]
+      # 'v238': [158.7423, -373.5843, 295.5249, -75.2952]
   }
 
-  for coef_label in ['new_coefs', 'v238']:
+  for coef_label in ['new_coefs']:
     coefs = coef_dict[coef_label]
     # formatted for C++ so you can just paste it in to some_nsim_mapper.cc
     logging.info('[%s] 3rd order polynomial coefficients {%f, %f, %f, %f}',
